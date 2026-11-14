@@ -31,7 +31,7 @@ echo [5/5] Mache die App zum Geraeteeigentuemer ...
 
 echo.
 echo ===== FERTIG =====
-echo Gib jetzt auf dem Handy deines Sohnes den Kopplungscode aus deiner Eltern-App ein.
+echo Auf dem Kinder-Handy erscheint jetzt ein QR-Code. Scanne ihn mit der Eltern-App.
 echo Danach kannst du das Kabel abziehen und seine Konten wieder anmelden.
 pause
 exit /b 0

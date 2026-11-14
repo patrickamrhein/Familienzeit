@@ -42,6 +42,11 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
+import com.google.mlkit.vision.barcode.common.Barcode;
+import com.google.mlkit.vision.codescanner.GmsBarcodeScanner;
+import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions;
+import com.google.mlkit.vision.codescanner.GmsBarcodeScanning;
+
 import de.familienzeit.common.Crypto;
 import de.familienzeit.common.Updater;
 
@@ -457,6 +462,17 @@ public class MainActivity extends Activity {
             }
         }));
         ui.full(c, ui.pill("Kopplungscode anzeigen", false, () -> reauth(this::showCode)));
+        ui.full(c, ui.pill("Anderes Kinder-Handy koppeln …", false, () -> reauth(() ->
+                new AlertDialog.Builder(this)
+                        .setTitle("Neu koppeln?")
+                        .setMessage("Die Verbindung zum bisherigen Kinder-Handy wird hier gelöscht. "
+                                + "Die Regeln dort bleiben bestehen.")
+                        .setPositiveButton("Neu koppeln", (d, w) -> {
+                            Sync.p(this).edit().clear().apply();
+                            render();
+                        })
+                        .setNegativeButton("Abbrechen", null)
+                        .show())));
         ui.full(c, ui.dangerPill("Kontrolle komplett aufheben …", () -> reauth(this::confirmRelease)));
     }
 
@@ -477,28 +493,72 @@ public class MainActivity extends Activity {
     }
 
     private void renderPairing() {
+        boolean hasCode = !Sync.code(this).isEmpty();
         TextView sub = ui.hint(root, "Einrichtung");
         sub.setPadding(ui.dp(4), 0, 0, ui.dp(14));
         LinearLayout c = ui.card(root);
-        ui.cardTitle(c, "Kopplung");
-        ui.body(c, "Gib diesen Code auf dem Handy deines Sohnes in der App „Familienzeit“ ein:");
-        TextView code = new TextView(this);
-        code.setText(Crypto.pretty(Sync.code(this)));
-        code.setTextSize(28);
-        code.setTextColor(ui.onPrimaryContainer);
-        code.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
-        code.setGravity(Gravity.CENTER);
-        code.setBackground(ui.rounded(ui.primaryContainer, 16));
-        code.setPadding(0, ui.dp(18), 0, ui.dp(18));
-        code.setTextIsSelectable(true);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        lp.topMargin = ui.dp(12);
-        lp.bottomMargin = ui.dp(12);
-        c.addView(code, lp);
-        ui.hint(c, "Der Code ist gleichzeitig der Schlüssel für die Verschlüsselung. Gib ihn nicht weiter.");
-        ui.body(c, "Warte auf die erste Meldung vom Kinder-Handy …").setPadding(0, ui.dp(12), 0, 0);
-        ui.full(c, ui.pill("Jetzt prüfen", true, this::pollAsync));
+        if (!hasCode) {
+            ui.cardTitle(c, "Kinder-Handy koppeln");
+            ui.body(c, "Öffne auf dem Kinder-Handy die App „Familienzeit“. Sie zeigt einen QR-Code – "
+                    + "den scannst du hier.");
+            ui.full(c, ui.pill("QR-Code scannen", true, this::scanQr));
+            ui.full(c, ui.pill("Code eintippen", false, this::enterCode));
+        } else {
+            ui.cardTitle(c, "Fast fertig");
+            ui.body(c, "Warte auf die erste Meldung vom Kinder-Handy … Das dauert meist unter einer Minute.");
+            ui.full(c, ui.pill("Jetzt prüfen", true, this::pollAsync));
+            ui.full(c, ui.pill("Neu koppeln", false, () -> {
+                Sync.p(this).edit().clear().apply();
+                render();
+            }));
+        }
+    }
+
+    private void scanQr() {
+        GmsBarcodeScannerOptions opts = new GmsBarcodeScannerOptions.Builder()
+                .setBarcodeFormats(Barcode.FORMAT_QR_CODE)
+                .build();
+        GmsBarcodeScanner scanner = GmsBarcodeScanning.getClient(this, opts);
+        scanner.startScan()
+                .addOnSuccessListener(code -> {
+                    String raw = code.getRawValue() == null ? "" : code.getRawValue();
+                    if (!raw.startsWith("FZ1:") || !Crypto.isValid(raw.substring(4))) {
+                        toast("Das ist kein Familienzeit-Code");
+                        return;
+                    }
+                    pairWith(raw.substring(4));
+                })
+                .addOnFailureListener(e -> toast("Scanner nicht verfügbar – bitte Code eintippen"));
+    }
+
+    private void enterCode() {
+        final EditText et = new EditText(this);
+        et.setHint("XXXX-XXXX-XXXX");
+        et.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS);
+        new AlertDialog.Builder(this)
+                .setTitle("Code vom Kinder-Handy")
+                .setView(et)
+                .setPositiveButton("Koppeln", (d, w) -> {
+                    String code = et.getText().toString();
+                    if (Crypto.isValid(code)) pairWith(code);
+                    else toast("Code ungültig – bitte genau abtippen");
+                })
+                .setNegativeButton("Abbrechen", null)
+                .show();
+    }
+
+    private void pairWith(final String code) {
+        new Thread(() -> {
+            try {
+                Sync.pair(this, code);
+                main.post(() -> {
+                    toast("Gekoppelt – warte auf das Kinder-Handy …");
+                    render();
+                });
+            } catch (Exception e) {
+                main.post(() -> toast("Keine Verbindung: " + e.getMessage()));
+            }
+        }).start();
     }
 
     // ================================================================ App-Regeln

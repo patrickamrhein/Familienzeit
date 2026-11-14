@@ -33,4 +33,4 @@ if ! "$ADB" shell dpm set-device-owner $PKG/.AdminReceiver; then
 fi
 "$ADB" shell am start -n $PKG/.MainActivity >/dev/null
 echo; echo "===== FERTIG ====="
-echo "Gib jetzt auf dem Handy deines Sohnes den Kopplungscode aus deiner Eltern-App ein."
+echo "Auf dem Kinder-Handy erscheint jetzt ein QR-Code. Scanne ihn mit der Eltern-App."

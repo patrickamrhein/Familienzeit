@@ -45,3 +45,8 @@ android {
         abortOnError false
     }
 }
+
+dependencies {
+    // QR-Scanner von Google Play-Diensten (braucht keine Kamera-Berechtigung)
+    implementation 'com.google.android.gms:play-services-code-scanner:16.1.0'
+}

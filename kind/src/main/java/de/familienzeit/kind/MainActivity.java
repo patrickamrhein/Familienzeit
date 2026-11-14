@@ -2,12 +2,15 @@ package de.familienzeit.kind;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.graphics.Bitmap;
+import android.graphics.Color;
 import android.graphics.Typeface;
 import android.os.Bundle;
-import android.text.InputType;
+import android.view.Gravity;
 import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -16,6 +19,10 @@ import android.widget.Toast;
 import org.json.JSONObject;
 
 import java.util.Iterator;
+
+import com.google.zxing.BarcodeFormat;
+import com.google.zxing.common.BitMatrix;
+import com.google.zxing.qrcode.QRCodeWriter;
 
 import de.familienzeit.common.Crypto;
 
@@ -52,29 +59,36 @@ public class MainActivity extends Activity {
         }
 
         if (Store.code(this).isEmpty()) {
-            text("Gib den Kopplungscode ein, den die Eltern-App anzeigt:");
-            final EditText et = new EditText(this);
-            et.setHint("XXXX-XXXX-XXXX");
-            et.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS);
-            root.addView(et);
-            button("Koppeln", () -> {
-                String code = et.getText().toString();
-                if (!Crypto.isValid(code)) {
-                    Toast.makeText(this, "Code ungültig – bitte genau abtippen", Toast.LENGTH_LONG).show();
-                    return;
-                }
-                Store.p(this).edit()
-                        .putString("code", Crypto.normalize(code))
-                        .putLong("lastCmdTs", System.currentTimeMillis())
-                        .apply();
-                Policy.applyBase(this, false);
-                GuardService.start(this);
-                render();
-            });
+            Store.p(this).edit()
+                    .putString("code", Crypto.newCode())
+                    .putLong("lastCmdTs", System.currentTimeMillis())
+                    .apply();
+        }
+        GuardService.start(this);
+
+        if (!Store.p(this).getBoolean("paired", false)) {
+            text("Scanne diesen QR-Code mit der App „Familienzeit Eltern“:");
+            ImageView qr = new ImageView(this);
+            qr.setImageBitmap(qrBitmap("FZ1:" + Store.code(this), dp(260)));
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(260), dp(260));
+            lp.gravity = Gravity.CENTER_HORIZONTAL;
+            lp.topMargin = dp(16);
+            lp.bottomMargin = dp(16);
+            root.addView(qr, lp);
+            TextView code = text(Crypto.pretty(Store.code(this)));
+            code.setTextSize(22);
+            code.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
+            code.setGravity(Gravity.CENTER);
+            text("Ohne Kamera kannst du den Code auch in der Eltern-App eintippen. "
+                    + "Der Code ist der Schlüssel zu allen Daten – nicht abfotografieren lassen. "
+                    + "Nach der Kopplung wird er hier nicht mehr angezeigt.");
+            button("Prüfen, ob gekoppelt", this::render);
+            root.postDelayed(() -> {
+                if (!isFinishing() && !Store.p(this).getBoolean("paired", false)) render();
+            }, 5000);
             return;
         }
 
-        GuardService.start(this);
         JSONObject cfg = Store.cfg(this);
         text(Store.p(this).getString("statusText", "Wird berechnet …"));
 
@@ -128,6 +142,19 @@ public class MainActivity extends Activity {
                 })
                 .setNegativeButton("Abbrechen", null)
                 .show();
+    }
+
+    private static Bitmap qrBitmap(String text, int size) {
+        try {
+            BitMatrix m = new QRCodeWriter().encode(text, BarcodeFormat.QR_CODE, size, size);
+            Bitmap bmp = Bitmap.createBitmap(size, size, Bitmap.Config.RGB_565);
+            for (int x = 0; x < size; x++) {
+                for (int y = 0; y < size; y++) bmp.setPixel(x, y, m.get(x, y) ? Color.BLACK : Color.WHITE);
+            }
+            return bmp;
+        } catch (Exception e) {
+            return Bitmap.createBitmap(1, 1, Bitmap.Config.RGB_565);
+        }
     }
 
     private String label(String pkg) {

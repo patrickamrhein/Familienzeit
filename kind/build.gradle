@@ -45,3 +45,8 @@ android {
         abortOnError false
     }
 }
+
+dependencies {
+    // erzeugt den QR-Code für die Kopplung
+    implementation 'com.google.zxing:core:3.5.3'
+}

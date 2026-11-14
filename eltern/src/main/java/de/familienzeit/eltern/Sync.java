@@ -30,13 +30,13 @@ final class Sync {
     }
 
     static String code(Context c) {
-        SharedPreferences sp = p(c);
-        String code = sp.getString("code", "");
-        if (code.isEmpty()) {
-            code = Crypto.newCode();
-            sp.edit().putString("code", code).apply();
-        }
-        return code;
+        return p(c).getString("code", "");
+    }
+
+    /** Neues Kinder-Handy koppeln: alte Daten verwerfen, Code speichern, Hallo senden. */
+    static void pair(Context c, String code) throws Exception {
+        p(c).edit().clear().putString("code", Crypto.normalize(code)).apply();
+        sendCmd(c, "hello");
     }
 
     static JSONObject json(Context c, String key) {
@@ -92,6 +92,7 @@ final class Sync {
     static synchronized boolean poll(Context c, boolean notify) throws Exception {
         SharedPreferences sp = p(c);
         String code = code(c);
+        if (code.isEmpty()) return false;
         List<Ntfy.Msg> msgs = Ntfy.poll(Crypto.topic(code, "st"), sp.getString("lastId", "all"));
         boolean changed = false;
         long now = System.currentTimeMillis();

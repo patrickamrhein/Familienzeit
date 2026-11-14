@@ -25,7 +25,7 @@ Danach unter **Actions** den Lauf „Apps bauen und veröffentlichen“ mit *Re-
 
 Auf deinem Handy die Release-Seite öffnen, `eltern.apk` herunterladen und öffnen.
 Android fragt einmal, ob der Browser Apps installieren darf → erlauben.
-Die App zeigt einen **Kopplungscode** an.
+Die App zeigt „Kinder-Handy koppeln“ – das kommt in Schritt 4.
 
 ## 3. Kinder-Handy vorbereiten
 
@@ -43,7 +43,9 @@ Die App zeigt einen **Kopplungscode** an.
 2. Handy per USB-Kabel anschließen.
 3. Windows: `einrichten-windows.bat` doppelklicken. Mac/Linux: `einrichten-mac-linux.sh` im Terminal starten.
 4. Auf dem Handy „USB-Debugging zulassen“ bestätigen.
-5. Am Ende öffnet sich die App auf dem Handy → **Kopplungscode** aus der Eltern-App eingeben.
+5. Am Ende öffnet sich die App auf dem Kinder-Handy und zeigt einen **QR-Code**.
+   In der Eltern-App auf **QR-Code scannen** tippen und den Code scannen (oder abtippen).
+   Erst danach greifen die Sperren und USB-Debugging wird abgeschaltet.
 6. Kabel ab, Konten wieder anmelden. Fertig.
 
 USB-Debugging wird danach automatisch gesperrt (in der Eltern-App unter *Wartung* bei Bedarf freigebbar).

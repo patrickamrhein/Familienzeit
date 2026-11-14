@@ -105,7 +105,11 @@ public class GuardService extends Service {
         pf.addDataScheme("package");
         registerReceiver(pkgRx, pf);
 
-        h.post(() -> Policy.applyBase(this, Store.cfg(this).optBoolean("debug", false)));
+        h.post(() -> {
+            if (Store.p(this).getBoolean("paired", false)) {
+                Policy.applyBase(this, Store.cfg(this).optBoolean("debug", false));
+            }
+        });
         kick();
     }
 
@@ -165,6 +169,18 @@ public class GuardService extends Service {
         }
         SharedPreferences sp = Store.p(this);
         long now = System.currentTimeMillis();
+
+        if (!sp.getBoolean("paired", false)) {
+            // Noch nicht gekoppelt: nur auf die erste Nachricht der Eltern-App warten
+            try {
+                pollRemote(code);
+            } catch (Exception ignored) {
+            }
+            if (!sp.getBoolean("paired", false)) {
+                updateNotif("Warte auf Kopplung mit der Eltern-App");
+                return;
+            }
+        }
 
         if (now - sp.getLong("lastPoll", 0) >= (interactive() ? POLL_MS : 0)) {
             sp.edit().putLong("lastPoll", now).apply();
@@ -352,6 +368,12 @@ public class GuardService extends Service {
                 o = new JSONObject(plain);
             } catch (Exception e) {
                 continue;
+            }
+            if (!sp.getBoolean("paired", false)) {
+                sp.edit().putBoolean("paired", true).apply();
+                Policy.applyBase(this, false);
+                forceStatus = true;
+                event("✅ Kinder-Handy ist gekoppelt");
             }
             String type = o.optString("type");
             if ("cfg".equals(type)) {
