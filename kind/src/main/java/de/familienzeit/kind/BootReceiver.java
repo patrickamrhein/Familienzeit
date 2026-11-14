@@ -8,7 +8,7 @@ import android.content.Intent;
 public class BootReceiver extends BroadcastReceiver {
     @Override
     public void onReceive(Context context, Intent intent) {
-        if (Policy.isOwner(context) && !Store.code(context).isEmpty()) {
+        if (Policy.isOwner(context) && !Family.key(context).isEmpty()) {
             GuardService.start(context);
         }
     }

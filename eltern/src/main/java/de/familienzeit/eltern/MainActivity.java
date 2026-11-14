@@ -21,6 +21,7 @@ import android.view.Gravity;
 import android.view.ViewGroup;
 import android.widget.CheckBox;
 import android.widget.EditText;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -48,6 +49,7 @@ import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions;
 import com.google.mlkit.vision.codescanner.GmsBarcodeScanning;
 
 import de.familienzeit.common.Crypto;
+import de.familienzeit.common.Qr;
 import de.familienzeit.common.Updater;
 
 /** Eltern-App: Status ansehen, Regeln ändern, Fernbefehle senden. Geschützt per Fingerabdruck/PIN. */
@@ -61,6 +63,8 @@ public class MainActivity extends Activity {
     private boolean visible;
     private boolean authRunning;
     private int remoteParentVersion = -1;
+    private String lid = "";
+    private boolean addingChild;
 
     private final Runnable refresher = new Runnable() {
         @Override
@@ -75,6 +79,9 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle b) {
         super.onCreate(b);
         ui = new Ui(this);
+        Sync.ensureIdentity(this);
+        String fromNotif = getIntent().getStringExtra("lid");
+        if (fromNotif != null) Sync.select(this, fromNotif);
         getWindow().setStatusBarColor(ui.surface);
         getWindow().setNavigationBarColor(ui.surface);
         getWindow().getDecorView().setSystemUiVisibility(
@@ -199,12 +206,9 @@ public class MainActivity extends Activity {
 
     private void pollAsync() {
         new Thread(() -> {
-            try {
-                if (Sync.poll(this, false)) main.post(() -> {
-                    if (unlocked() && visible) render();
-                });
-            } catch (Exception ignored) {
-            }
+            if (Sync.pollAll(this, false)) main.post(() -> {
+                if (unlocked() && visible) render();
+            });
         }).start();
     }
 
@@ -212,14 +216,24 @@ public class MainActivity extends Activity {
 
     private void render() {
         root.removeAllViews();
-        JSONObject st = Sync.json(this, "status");
-        JSONObject cfg = Sync.json(this, "cfg");
+        lid = Sync.selected(this);
 
         TextView h = ui.text(root, "Familienzeit", 28, ui.onSurface, true);
         h.setPadding(ui.dp(4), 0, 0, ui.dp(2));
 
-        if (!st.has("ts")) {
+        if (Sync.myName(this).isEmpty()) {
+            renderName();
+            return;
+        }
+        renderChildTabs();
+        if (lid.isEmpty() || addingChild) {
             renderPairing();
+            return;
+        }
+        JSONObject st = Sync.json(this, lid, "status");
+        JSONObject cfg = Sync.json(this, lid, "cfg");
+        if (!st.has("ts") || Sync.myRole(this, lid).isEmpty()) {
+            renderWaiting();
             return;
         }
         long ago = (System.currentTimeMillis() - st.optLong("ts")) / 60000;
@@ -233,7 +247,54 @@ public class MainActivity extends Activity {
         renderRules(cfg);
         renderApps(cfg, st);
         renderEvents();
+        renderParents(st);
         renderMaintenance(st, cfg);
+    }
+
+    private boolean admin() {
+        return "admin".equals(Sync.myRole(this, lid));
+    }
+
+    private void renderName() {
+        LinearLayout c = ui.card(root);
+        ui.cardTitle(c, "Willkommen");
+        ui.body(c, "Wie sollen dich die anderen sehen? Zum Beispiel „Papa“ oder „Mama“.");
+        final EditText et = ui.input(c, "Dein Name", "", InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_WORDS);
+        ui.full(c, ui.pill("Weiter", true, () -> {
+            String n = et.getText().toString().trim();
+            if (n.isEmpty()) return;
+            Sync.me(this).edit().putString("name", n).apply();
+            render();
+        }));
+    }
+
+    /** Auswahl der Kinder als Reiter oben. */
+    private void renderChildTabs() {
+        java.util.List<String> kids = Sync.children(this);
+        android.widget.HorizontalScrollView hs = new android.widget.HorizontalScrollView(this);
+        hs.setHorizontalScrollBarEnabled(false);
+        LinearLayout row = ui.hbox();
+        row.setPadding(0, ui.dp(8), 0, ui.dp(12));
+        for (final String k : kids) {
+            boolean sel = k.equals(lid) && !addingChild;
+            android.widget.Button b = ui.pill(Sync.childName(this, k), sel, () -> {
+                addingChild = false;
+                Sync.select(this, k);
+                render();
+            });
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            lp.rightMargin = ui.dp(8);
+            row.addView(b, lp);
+        }
+        if (!kids.isEmpty()) {
+            row.addView(ui.pill("+ Kind", addingChild, () -> {
+                addingChild = true;
+                render();
+            }));
+            hs.addView(row);
+            root.addView(hs);
+        }
     }
 
     private void renderToday(JSONObject st, JSONObject cfg) {
@@ -294,7 +355,7 @@ public class MainActivity extends Activity {
     }
 
     private void renderPending(JSONObject cfg) {
-        JSONArray pend = Sync.json(this, "apps").optJSONArray("pending");
+        JSONArray pend = Sync.json(this, lid, "apps").optJSONArray("pending");
         if (pend == null || pend.length() == 0) return;
         Set<String> pending = new HashSet<>();
         for (int i = 0; i < pend.length(); i++) pending.add(pend.optString(i));
@@ -335,7 +396,7 @@ public class MainActivity extends Activity {
     private void renderLocation() {
         LinearLayout c = ui.card(root);
         ui.cardTitle(c, "📍 Standort");
-        final JSONObject loc = Sync.json(this, "loc");
+        final JSONObject loc = Sync.json(this, lid, "loc");
         if (loc.has("lat")) {
             long locAgo = (System.currentTimeMillis() - loc.optLong("fix")) / 60000;
             ui.body(c, "Stand " + (locAgo < 1 ? "gerade eben" : "vor " + agoText(locAgo))
@@ -385,7 +446,7 @@ public class MainActivity extends Activity {
         c.addView(times);
         ui.full(c, ui.pill("Regeln speichern", true, () -> {
             try {
-                JSONObject n = Sync.json(this, "cfg");
+                JSONObject n = Sync.json(this, lid, "cfg");
                 n.put("daily", parseMin(dailyEt.getText().toString()));
                 n.put("net", parseMin(netEt.getText().toString()));
                 n.put("nightOn", nightCb.isChecked());
@@ -399,7 +460,7 @@ public class MainActivity extends Activity {
     }
 
     private void renderApps(JSONObject cfg, JSONObject st) {
-        JSONArray apps = Sync.json(this, "apps").optJSONArray("apps");
+        JSONArray apps = Sync.json(this, lid, "apps").optJSONArray("apps");
         if (apps == null || apps.length() == 0) return;
         Map<String, Long> usage = new HashMap<>();
         JSONArray top = st.optJSONArray("top");
@@ -429,7 +490,7 @@ public class MainActivity extends Activity {
     }
 
     private void renderEvents() {
-        JSONArray evs = Sync.events(this);
+        JSONArray evs = Sync.events(this, lid);
         if (evs.length() == 0) return;
         LinearLayout c = ui.card(root);
         ui.cardTitle(c, "Meldungen");
@@ -442,6 +503,88 @@ public class MainActivity extends Activity {
         }
     }
 
+    private void renderParents(JSONObject st) {
+        JSONArray ps = st.optJSONArray("parents");
+        LinearLayout c = ui.card(root);
+        ui.cardTitle(c, "Eltern");
+        final boolean admin = admin();
+        String me = Sync.myId(this);
+        if (ps != null) {
+            for (int i = 0; i < ps.length(); i++) {
+                final JSONObject p = ps.optJSONObject(i);
+                if (p == null) continue;
+                boolean isMe = me.equals(p.optString("id"));
+                boolean pAdmin = "admin".equals(p.optString("role"));
+                ui.listRow(c, p.optString("name") + (isMe ? " (du)" : ""), pAdmin ? "Admin" : "Elternteil", -1, 0,
+                        admin && !isMe ? () -> manageParent(p) : null);
+            }
+        }
+        if (admin) {
+            ui.full(c, ui.pill("Elternteil einladen", true, this::invite));
+        } else {
+            ui.hint(c, "Einladen, Entfernen und Freigeben kann nur ein Admin.");
+        }
+    }
+
+    private void invite() {
+        String[] opts = {"Elternteil (Regeln, Standort, Bonus)", "Admin (zusätzlich Eltern verwalten, Kontrolle aufheben)"};
+        new AlertDialog.Builder(this)
+                .setTitle("Wen einladen?")
+                .setItems(opts, (d, which) -> reauth(() -> sendInvite(which == 1 ? "admin" : "parent")))
+                .show();
+    }
+
+    private void sendInvite(final String role) {
+        final String secret = Crypto.newSecret();
+        final String key = Sync.key(this, lid);
+        new Thread(() -> {
+            try {
+                JSONObject x = new JSONObject();
+                x.put("h", Crypto.sha(secret));
+                x.put("role", role);
+                x.put("exp", System.currentTimeMillis() + 24 * 3600_000L);
+                Sync.sendCmd(this, lid, "invite", x);
+                main.post(() -> {
+                    ImageView iv = new ImageView(this);
+                    iv.setImageBitmap(Qr.bitmap(Qr.payload(key, secret), ui.dp(260)));
+                    iv.setPadding(0, ui.dp(16), 0, ui.dp(8));
+                    new AlertDialog.Builder(this)
+                            .setTitle("Mit dem anderen Eltern-Handy scannen")
+                            .setMessage("In der App „Familienzeit Eltern“ auf „QR-Code scannen“ tippen. "
+                                    + "Die Einladung gilt 24 Stunden und nur einmal.")
+                            .setView(iv)
+                            .setPositiveButton("Fertig", null)
+                            .show();
+                });
+            } catch (Exception e) {
+                main.post(() -> toast("Senden fehlgeschlagen: " + e.getMessage()));
+            }
+        }).start();
+    }
+
+    private void manageParent(final JSONObject p) {
+        final String id = p.optString("id");
+        final boolean pAdmin = "admin".equals(p.optString("role"));
+        String[] opts = {pAdmin ? "Zum Elternteil machen" : "Zum Admin machen", "Entfernen"};
+        new AlertDialog.Builder(this)
+                .setTitle(p.optString("name"))
+                .setItems(opts, (d, which) -> reauth(() -> {
+                    try {
+                        JSONObject x = new JSONObject();
+                        x.put("id", id);
+                        if (which == 0) {
+                            x.put("role", pAdmin ? "parent" : "admin");
+                            cmdX("setRole", x, "Wird geändert …");
+                        } else {
+                            cmdX("removeParent", x, p.optString("name")
+                                    + " wird entfernt. Der Familienschlüssel wird dabei erneuert.");
+                        }
+                    } catch (Exception ignored) {
+                    }
+                }))
+                .show();
+    }
+
     private void renderMaintenance(JSONObject st, JSONObject cfg) {
         LinearLayout c = ui.card(root);
         ui.cardTitle(c, "Wartung");
@@ -449,69 +592,88 @@ public class MainActivity extends Activity {
         if (remoteParentVersion > BuildConfig.VERSION_CODE) {
             ui.full(c, ui.pill("Eltern-App aktualisieren (Version " + remoteParentVersion + ")", true, this::updateSelf));
         }
+        ui.full(c, ui.pill("Name des Kindes ändern", false, this::renameChild));
         ui.full(c, ui.pill("Update auf dem Kinder-Handy installieren", false,
                 () -> cmd("update", "Kinder-Handy sucht nach Updates …")));
-        final boolean debug = cfg.optBoolean("debug", false);
-        ui.full(c, ui.pill(debug ? "USB-Debugging wieder sperren" : "USB-Debugging erlauben (Wartung am PC)", false, () -> {
-            try {
-                JSONObject n = Sync.json(this, "cfg");
-                n.put("debug", !debug);
-                send(n, !debug ? "USB-Debugging erlaubt" : "USB-Debugging gesperrt");
-            } catch (Exception e) {
-                toast("Fehler: " + e.getMessage());
-            }
-        }));
-        ui.full(c, ui.pill("Kopplungscode anzeigen", false, () -> reauth(this::showCode)));
-        ui.full(c, ui.pill("Anderes Kinder-Handy koppeln …", false, () -> reauth(() ->
-                new AlertDialog.Builder(this)
-                        .setTitle("Neu koppeln?")
-                        .setMessage("Die Verbindung zum bisherigen Kinder-Handy wird hier gelöscht. "
-                                + "Die Regeln dort bleiben bestehen.")
-                        .setPositiveButton("Neu koppeln", (d, w) -> {
-                            Sync.p(this).edit().clear().apply();
-                            render();
-                        })
-                        .setNegativeButton("Abbrechen", null)
-                        .show())));
-        ui.full(c, ui.dangerPill("Kontrolle komplett aufheben …", () -> reauth(this::confirmRelease)));
+        if (admin()) {
+            final boolean debug = cfg.optBoolean("debug", false);
+            ui.full(c, ui.pill(debug ? "USB-Debugging wieder sperren" : "USB-Debugging erlauben (Wartung am PC)", false, () -> {
+                try {
+                    JSONObject n = Sync.json(this, lid, "cfg");
+                    n.put("debug", !debug);
+                    send(n, !debug ? "USB-Debugging erlaubt" : "USB-Debugging gesperrt");
+                } catch (Exception e) {
+                    toast("Fehler: " + e.getMessage());
+                }
+            }));
+            ui.full(c, ui.pill("Notfall-Code anzeigen", false, () -> reauth(this::showRecovery)));
+            ui.full(c, ui.dangerPill("Kontrolle komplett aufheben …", () -> reauth(this::confirmRelease)));
+        }
+        ui.full(c, ui.dangerPill("Dieses Kind aus meiner App entfernen …", () -> new AlertDialog.Builder(this)
+                .setTitle("Aus deiner App entfernen?")
+                .setMessage("Das Kinder-Handy bleibt geschützt. Damit du auch dort nicht mehr eingetragen bist, "
+                        + "sollte ein Admin dich unter „Eltern“ entfernen.")
+                .setPositiveButton("Entfernen", (d, w) -> {
+                    Sync.removeChild(this, lid);
+                    render();
+                })
+                .setNegativeButton("Abbrechen", null)
+                .show()));
     }
 
-    private void showCode() {
+    private void renameChild() {
+        final EditText et = new EditText(this);
+        et.setText(Sync.json(this, lid, "cfg").optString("name", ""));
+        et.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_WORDS);
+        new AlertDialog.Builder(this)
+                .setTitle("Name des Kindes")
+                .setView(et)
+                .setPositiveButton("OK", (d, w) -> {
+                    try {
+                        JSONObject n = Sync.json(this, lid, "cfg");
+                        n.put("name", et.getText().toString().trim());
+                        send(n, "Gespeichert");
+                    } catch (Exception ignored) {
+                    }
+                })
+                .setNegativeButton("Abbrechen", null)
+                .show();
+    }
+
+    private void showRecovery() {
         TextView tv = new TextView(this);
-        tv.setText(Crypto.pretty(Sync.code(this)));
+        tv.setText(Crypto.pretty(Crypto.recoveryCode(Sync.key(this, lid))));
         tv.setTextSize(26);
         tv.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
         tv.setGravity(Gravity.CENTER);
         tv.setPadding(0, ui.dp(20), 0, ui.dp(8));
         tv.setTextIsSelectable(true);
         new AlertDialog.Builder(this)
-                .setTitle("Kopplungscode")
-                .setMessage("Der Code ist der Schlüssel zu allen Daten. Nicht weitergeben.")
+                .setTitle("Notfall-Code")
+                .setMessage("Damit kann man direkt am Kinder-Handy die Kontrolle aufheben oder ein neues "
+                        + "Eltern-Handy koppeln. Nicht weitergeben. Ändert sich, wenn ein Elternteil entfernt wird.")
                 .setView(tv)
                 .setPositiveButton("Schließen", null)
                 .show();
     }
 
-    private void renderPairing() {
-        boolean hasCode = !Sync.code(this).isEmpty();
-        TextView sub = ui.hint(root, "Einrichtung");
-        sub.setPadding(ui.dp(4), 0, 0, ui.dp(14));
+    private void renderWaiting() {
         LinearLayout c = ui.card(root);
-        if (!hasCode) {
-            ui.cardTitle(c, "Kinder-Handy koppeln");
-            ui.body(c, "Öffne auf dem Kinder-Handy die App „Familienzeit“. Sie zeigt einen QR-Code – "
-                    + "den scannst du hier.");
-            ui.full(c, ui.pill("QR-Code scannen", true, this::scanQr));
-            ui.full(c, ui.pill("Code eintippen", false, this::enterCode));
-        } else {
-            ui.cardTitle(c, "Fast fertig");
-            ui.body(c, "Warte auf die erste Meldung vom Kinder-Handy … Das dauert meist unter einer Minute.");
-            ui.full(c, ui.pill("Jetzt prüfen", true, this::pollAsync));
-            ui.full(c, ui.pill("Neu koppeln", false, () -> {
-                Sync.p(this).edit().clear().apply();
-                render();
-            }));
-        }
+        ui.cardTitle(c, "Fast fertig");
+        ui.body(c, "Warte auf die Bestätigung vom Kinder-Handy … Das dauert meist unter einer Minute.");
+        ui.full(c, ui.pill("Jetzt prüfen", true, this::pollAsync));
+        ui.full(c, ui.pill("Abbrechen", false, () -> {
+            Sync.removeChild(this, lid);
+            render();
+        }));
+    }
+
+    private void renderPairing() {
+        LinearLayout c = ui.card(root);
+        ui.cardTitle(c, Sync.children(this).isEmpty() ? "Kinder-Handy koppeln" : "Weiteres Kind koppeln");
+        ui.body(c, "Scanne den QR-Code auf dem Kinder-Handy (App „Familienzeit“). "
+                + "Als zweites Elternteil scannst du stattdessen die Einladung aus der App des Admins.");
+        ui.full(c, ui.pill("QR-Code scannen", true, this::scanQr));
     }
 
     private void scanQr() {
@@ -521,42 +683,38 @@ public class MainActivity extends Activity {
         GmsBarcodeScanner scanner = GmsBarcodeScanning.getClient(this, opts);
         scanner.startScan()
                 .addOnSuccessListener(code -> {
-                    String raw = code.getRawValue() == null ? "" : code.getRawValue();
-                    if (!raw.startsWith("FZ1:") || !Crypto.isValid(raw.substring(4))) {
+                    String[] p = Qr.parse(code.getRawValue());
+                    if (p == null) {
                         toast("Das ist kein Familienzeit-Code");
                         return;
                     }
-                    pairWith(raw.substring(4));
+                    for (String k : Sync.children(this)) {
+                        if (p[0].equals(Sync.key(this, k))) {
+                            toast("Dieses Kind ist schon gekoppelt");
+                            return;
+                        }
+                    }
+                    pairWith(p[0], p[1]);
                 })
-                .addOnFailureListener(e -> toast("Scanner nicht verfügbar – bitte Code eintippen"));
+                .addOnFailureListener(e -> toast("Scanner nicht verfügbar: " + e.getMessage()));
     }
 
-    private void enterCode() {
-        final EditText et = new EditText(this);
-        et.setHint("XXXX-XXXX-XXXX");
-        et.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS);
-        new AlertDialog.Builder(this)
-                .setTitle("Code vom Kinder-Handy")
-                .setView(et)
-                .setPositiveButton("Koppeln", (d, w) -> {
-                    String code = et.getText().toString();
-                    if (Crypto.isValid(code)) pairWith(code);
-                    else toast("Code ungültig – bitte genau abtippen");
-                })
-                .setNegativeButton("Abbrechen", null)
-                .show();
-    }
-
-    private void pairWith(final String code) {
+    private void pairWith(final String key, final String secret) {
+        addingChild = false;
+        final String newLid = Sync.addChild(this, key);
         new Thread(() -> {
             try {
-                Sync.pair(this, code);
+                Sync.join(this, newLid, secret);
                 main.post(() -> {
-                    toast("Gekoppelt – warte auf das Kinder-Handy …");
+                    toast("Anfrage gesendet – warte auf das Kinder-Handy …");
                     render();
                 });
             } catch (Exception e) {
-                main.post(() -> toast("Keine Verbindung: " + e.getMessage()));
+                Sync.removeChild(this, newLid);
+                main.post(() -> {
+                    toast("Keine Verbindung: " + e.getMessage());
+                    render();
+                });
             }
         }).start();
     }
@@ -577,7 +735,7 @@ public class MainActivity extends Activity {
 
     private Map<String, String> labels() {
         Map<String, String> m = new HashMap<>();
-        JSONArray apps = Sync.json(this, "apps").optJSONArray("apps");
+        JSONArray apps = Sync.json(this, lid, "apps").optJSONArray("apps");
         if (apps != null) {
             for (int i = 0; i < apps.length(); i++) {
                 JSONArray r = apps.optJSONArray(i);
@@ -624,7 +782,7 @@ public class MainActivity extends Activity {
     /** 0 = normal, 1 = Limit, 2 = gesperrt, 3 = immer erlaubt */
     private void setMode(String pkg, int mode, int minutes) {
         try {
-            JSONObject c = Sync.json(this, "cfg");
+            JSONObject c = Sync.json(this, lid, "cfg");
             Set<String> blocked = set(c, "blocked");
             Set<String> allowed = set(c, "allowed");
             Set<String> approved = set(c, "approved");
@@ -651,7 +809,7 @@ public class MainActivity extends Activity {
 
     private void addBonus(int min) {
         try {
-            JSONObject c = Sync.json(this, "cfg");
+            JSONObject c = Sync.json(this, lid, "cfg");
             int cur = today().equals(c.optString("bonusDay")) ? c.optInt("bonus", 0) : 0;
             c.put("bonusDay", today());
             c.put("bonus", cur + min);
@@ -664,7 +822,7 @@ public class MainActivity extends Activity {
     /** minutes > 0: so lange sperren, -1: bis morgen 6 Uhr, 0: aufheben */
     private void setPause(int minutes) {
         try {
-            JSONObject c = Sync.json(this, "cfg");
+            JSONObject c = Sync.json(this, lid, "cfg");
             long until = 0;
             if (minutes > 0) until = System.currentTimeMillis() + minutes * 60_000L;
             if (minutes < 0) {
@@ -684,7 +842,7 @@ public class MainActivity extends Activity {
     private void send(final JSONObject cfg, final String okMsg) {
         new Thread(() -> {
             try {
-                Sync.sendCfg(this, cfg);
+                Sync.sendCfg(this, lid, cfg);
                 main.post(() -> {
                     toast(okMsg + " – wird innerhalb ca. 1 Minute übernommen");
                     render();
@@ -696,9 +854,13 @@ public class MainActivity extends Activity {
     }
 
     private void cmd(final String cmd, final String okMsg) {
+        cmdX(cmd, null, okMsg);
+    }
+
+    private void cmdX(final String cmd, final JSONObject extra, final String okMsg) {
         new Thread(() -> {
             try {
-                Sync.sendCmd(this, cmd);
+                Sync.sendCmd(this, lid, cmd, extra);
                 main.post(() -> toast(okMsg));
             } catch (Exception e) {
                 main.post(() -> toast("Senden fehlgeschlagen: " + e.getMessage()));

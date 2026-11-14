@@ -32,6 +32,7 @@ import java.util.Set;
 import java.util.TreeMap;
 
 import de.familienzeit.common.Crypto;
+import de.familienzeit.common.Keys;
 import de.familienzeit.common.Ntfy;
 import de.familienzeit.common.Updater;
 
@@ -106,7 +107,7 @@ public class GuardService extends Service {
         registerReceiver(pkgRx, pf);
 
         h.post(() -> {
-            if (Store.p(this).getBoolean("paired", false)) {
+            if (Family.paired(this)) {
                 Policy.applyBase(this, Store.cfg(this).optBoolean("debug", false));
             }
         });
@@ -162,21 +163,17 @@ public class GuardService extends Service {
             updateNotif("Nicht eingerichtet");
             return;
         }
-        String code = Store.code(this);
-        if (code.isEmpty()) {
-            updateNotif("Noch nicht mit der Eltern-App gekoppelt");
-            return;
-        }
+        Family.init(this);
         SharedPreferences sp = Store.p(this);
         long now = System.currentTimeMillis();
 
-        if (!sp.getBoolean("paired", false)) {
-            // Noch nicht gekoppelt: nur auf die erste Nachricht der Eltern-App warten
+        if (!Family.paired(this)) {
+            // Noch nicht gekoppelt: nur auf die erste Eltern-App warten
             try {
-                pollRemote(code);
+                pollRemote();
             } catch (Exception ignored) {
             }
-            if (!sp.getBoolean("paired", false)) {
+            if (!Family.paired(this)) {
                 updateNotif("Warte auf Kopplung mit der Eltern-App");
                 return;
             }
@@ -185,7 +182,7 @@ public class GuardService extends Service {
         if (now - sp.getLong("lastPoll", 0) >= (interactive() ? POLL_MS : 0)) {
             sp.edit().putLong("lastPoll", now).apply();
             try {
-                pollRemote(code);
+                pollRemote();
             } catch (Exception ignored) {
             }
             if (!Policy.isOwner(this)) return; // wurde freigegeben
@@ -300,7 +297,7 @@ public class GuardService extends Service {
         // --- Status an die Eltern
         if (forceStatus || now - sp.getLong("statusSent", 0) >= STATUS_MS) {
             try {
-                sendStatus(code, u, screenMin, netMin, lock, netBlocked, apps, pm);
+                sendStatus(u, screenMin, netMin, lock, netBlocked, apps, pm);
                 sp.edit().putLong("statusSent", now).apply();
                 forceStatus = false;
             } catch (Exception ignored) {
@@ -308,10 +305,16 @@ public class GuardService extends Service {
         }
         if (now - sp.getLong("appsSent", 0) >= APPS_MS) {
             try {
-                sendApps(code, apps, pm);
+                sendApps(apps, pm);
                 sp.edit().putLong("appsSent", now).apply();
             } catch (Exception ignored) {
             }
+        }
+
+        // --- neuen Schlüssel an Eltern-Handys verteilen, die ihn noch nicht haben
+        if (now - sp.getLong("rekeySent", 0) >= 3 * 3600_000L) {
+            sp.edit().putLong("rekeySent", now).apply();
+            Family.sendRekeys(this);
         }
 
         // --- Updates
@@ -356,40 +359,60 @@ public class GuardService extends Service {
 
     // ---------------------------------------------------------------- Kommunikation
 
-    private void pollRemote(String code) throws Exception {
+    /** Liest Nachrichten der Eltern-Apps. Jede Nachricht muss von einem bekannten Eltern-Handy unterschrieben sein. */
+    private void pollRemote() throws Exception {
         SharedPreferences sp = Store.p(this);
-        List<Ntfy.Msg> msgs = Ntfy.poll(Crypto.topic(code, "cfg"), sp.getString("lastId", "all"));
+        String key = Family.key(this);
+        List<Ntfy.Msg> msgs = Ntfy.poll(Crypto.topic(key, "cfg"), sp.getString("lastId", "all"));
         for (Ntfy.Msg m : msgs) {
             sp.edit().putString("lastId", m.id).apply();
-            String plain = Crypto.decrypt(code, m.body);
+            String plain = Crypto.decrypt(key, m.body);
             if (plain == null) continue;
-            JSONObject o;
+            JSONObject env, d;
             try {
-                o = new JSONObject(plain);
+                env = new JSONObject(plain);
+                d = new JSONObject(env.getString("d"));
             } catch (Exception e) {
                 continue;
             }
-            if (!sp.getBoolean("paired", false)) {
-                sp.edit().putBoolean("paired", true).apply();
-                Policy.applyBase(this, false);
+            String pid = env.optString("p");
+            String sig = env.optString("s");
+            String type = d.optString("type");
+
+            if ("join".equals(type)) {
+                if (!Keys.verify(d.optString("pub"), env.optString("d"), sig)) continue;
+                boolean first = !Family.paired(this);
+                String who = Family.join(this, pid, d);
+                if (who == null) continue;
+                if (first) Policy.applyBase(this, false);
                 forceStatus = true;
-                event("✅ Kinder-Handy ist gekoppelt");
+                event("👤 " + who + " ist jetzt verbunden");
+                continue;
             }
-            String type = o.optString("type");
+
+            JSONObject parent = Family.parent(this, pid);
+            if (parent == null || !Keys.verify(parent.optString("pub"), env.optString("d"), sig)) continue;
+            boolean admin = Family.ADMIN.equals(parent.optString("role"));
+            String who = parent.optString("name", "Elternteil");
+
+            long ts = d.optLong("ts", 0);
+            long now = System.currentTimeMillis();
+            String tsKey = "ts:" + pid;
+            if (ts <= sp.getLong(tsKey, 0) || now - ts > 24 * 3600_000L) continue;
+            sp.edit().putLong(tsKey, ts).apply();
+
             if ("cfg".equals(type)) {
-                JSONObject c = o.optJSONObject("cfg");
-                if (c != null && c.optLong("v", 0) > Store.cfg(this).optLong("v", 0)) {
-                    boolean oldDebug = Store.cfg(this).optBoolean("debug", false);
+                JSONObject c = d.optJSONObject("cfg");
+                JSONObject cur = Store.cfg(this);
+                if (c != null && c.optLong("v", 0) > cur.optLong("v", 0)) {
+                    boolean oldDebug = cur.optBoolean("debug", false);
+                    if (!admin) c.put("debug", oldDebug);
                     Store.saveCfg(this, c);
                     if (c.optBoolean("debug", false) != oldDebug) Policy.applyBase(this, c.optBoolean("debug", false));
                     forceStatus = true;
                 }
             } else if ("cmd".equals(type)) {
-                long ts = o.optLong("ts", 0);
-                long now = System.currentTimeMillis();
-                if (ts <= sp.getLong("lastCmdTs", 0) || now - ts > 24 * 3600_000L) continue;
-                sp.edit().putLong("lastCmdTs", ts).apply();
-                String cmd = o.optString("cmd");
+                String cmd = d.optString("cmd");
                 if ("refresh".equals(cmd)) {
                     forceStatus = true;
                     sp.edit().putLong("appsSent", 0).apply();
@@ -397,11 +420,28 @@ public class GuardService extends Service {
                     forceUpdate = true;
                 } else if ("locate".equals(cmd)) {
                     locate();
-                } else if ("release".equals(cmd)) {
-                    try {
-                        event("🔓 Kontrolle wurde aufgehoben. Die App kann jetzt deinstalliert werden.");
-                    } catch (Exception ignored) {
+                } else if (!admin) {
+                    event("⛔ " + who + " darf „" + cmd + "“ nicht ausführen (nur Admin)");
+                } else if ("invite".equals(cmd)) {
+                    Family.addInvite(this, d.optString("h"), d.optString("role", Family.PARENT), d.optLong("exp"));
+                } else if ("removeParent".equals(cmd)) {
+                    String name = Family.remove(this, d.optString("id"));
+                    if (name != null) {
+                        event("👤 " + name + " wurde von " + who + " entfernt. Neuer Schlüssel wird verteilt.");
+                        Family.sendRekeys(this);
+                        sp.edit().putLong("rekeySent", now).apply();
+                        forceStatus = true;
+                        return; // neuer Kanal ab jetzt
                     }
+                } else if ("setRole".equals(cmd)) {
+                    String role = d.optString("role");
+                    String name = Family.setRole(this, d.optString("id"), role);
+                    if (name != null) {
+                        event("👤 " + name + " ist jetzt " + (Family.ADMIN.equals(role) ? "Admin" : "Elternteil"));
+                        forceStatus = true;
+                    }
+                } else if ("release".equals(cmd)) {
+                    event("🔓 Kontrolle wurde von " + who + " aufgehoben. Die App kann jetzt deinstalliert werden.");
                     Policy.release(this);
                     stopForeground(STOP_FOREGROUND_REMOVE);
                     stopSelf();
@@ -412,8 +452,8 @@ public class GuardService extends Service {
     }
 
     private void publish(JSONObject o) throws Exception {
-        String code = Store.code(this);
-        Ntfy.publish(Crypto.topic(code, "st"), Crypto.encrypt(code, o.toString()));
+        String key = Family.key(this);
+        Ntfy.publish(Crypto.topic(key, "st"), Crypto.encrypt(key, o.toString()));
     }
 
     private void event(String text) {
@@ -427,7 +467,7 @@ public class GuardService extends Service {
         }
     }
 
-    private void sendStatus(String code, Usage u, long screenMin, long netMin, String lock, boolean netBlocked,
+    private void sendStatus(Usage u, long screenMin, long netMin, String lock, boolean netBlocked,
                             List<ResolveInfo> apps, PackageManager pm) throws Exception {
         JSONObject o = new JSONObject();
         o.put("type", "st");
@@ -440,6 +480,8 @@ public class GuardService extends Service {
         o.put("lock", lock == null ? "" : lock);
         o.put("netBlocked", netBlocked);
         o.put("access", Usage.hasAccess(this));
+        o.put("cfg", Store.cfg(this));
+        o.put("parents", Family.publicList(this));
 
         // die meistgenutzten Apps
         TreeMap<Long, List<String>> byTime = new TreeMap<>(Collections.reverseOrder());
@@ -469,7 +511,7 @@ public class GuardService extends Service {
         publish(o);
     }
 
-    private void sendApps(String code, List<ResolveInfo> apps, PackageManager pm) throws Exception {
+    private void sendApps(List<ResolveInfo> apps, PackageManager pm) throws Exception {
         Set<String> essentials = Policy.essentials(this);
         JSONArray arr = new JSONArray();
         Set<String> seen = new HashSet<>();

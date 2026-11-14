@@ -20,10 +20,6 @@ final class Store {
         return c.getSharedPreferences("fz", Context.MODE_PRIVATE);
     }
 
-    static String code(Context c) {
-        return p(c).getString("code", "");
-    }
-
     static String today() {
         return new SimpleDateFormat("yyyy-MM-dd", Locale.GERMANY).format(new Date());
     }

@@ -2,8 +2,6 @@ package de.familienzeit.kind;
 
 import android.app.Activity;
 import android.app.AlertDialog;
-import android.graphics.Bitmap;
-import android.graphics.Color;
 import android.graphics.Typeface;
 import android.os.Bundle;
 import android.view.Gravity;
@@ -20,11 +18,9 @@ import org.json.JSONObject;
 
 import java.util.Iterator;
 
-import com.google.zxing.BarcodeFormat;
-import com.google.zxing.common.BitMatrix;
-import com.google.zxing.qrcode.QRCodeWriter;
 
 import de.familienzeit.common.Crypto;
+import de.familienzeit.common.Qr;
 
 /** Die Oberfläche auf dem Kinder-Handy: Kopplung, eigene Bildschirmzeit, Notfall-Freigabe. */
 public class MainActivity extends Activity {
@@ -58,35 +54,28 @@ public class MainActivity extends Activity {
             return;
         }
 
-        if (Store.code(this).isEmpty()) {
-            Store.p(this).edit()
-                    .putString("code", Crypto.newCode())
-                    .putLong("lastCmdTs", System.currentTimeMillis())
-                    .apply();
-        }
+        Family.init(this);
         GuardService.start(this);
 
-        if (!Store.p(this).getBoolean("paired", false)) {
-            text("Scanne diesen QR-Code mit der App „Familienzeit Eltern“:");
+        String secret = Family.qrSecret(this);
+        if (!secret.isEmpty()) {
+            boolean paired = Family.paired(this);
+            text(paired
+                    ? "Neue Kopplung: Scanne diesen QR-Code mit der App „Familienzeit Eltern“ auf dem neuen Eltern-Handy."
+                    : "Scanne diesen QR-Code mit der App „Familienzeit Eltern“. Wer zuerst scannt, wird Admin.");
             ImageView qr = new ImageView(this);
-            qr.setImageBitmap(qrBitmap("FZ1:" + Store.code(this), dp(260)));
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(260), dp(260));
+            qr.setImageBitmap(Qr.bitmap(Qr.payload(Family.key(this), secret), dp(280)));
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(280), dp(280));
             lp.gravity = Gravity.CENTER_HORIZONTAL;
             lp.topMargin = dp(16);
             lp.bottomMargin = dp(16);
             root.addView(qr, lp);
-            TextView code = text(Crypto.pretty(Store.code(this)));
-            code.setTextSize(22);
-            code.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
-            code.setGravity(Gravity.CENTER);
-            text("Ohne Kamera kannst du den Code auch in der Eltern-App eintippen. "
-                    + "Der Code ist der Schlüssel zu allen Daten – nicht abfotografieren lassen. "
-                    + "Nach der Kopplung wird er hier nicht mehr angezeigt.");
-            button("Prüfen, ob gekoppelt", this::render);
+            text("Der QR-Code ist der Schlüssel zu allen Daten – nicht abfotografieren lassen. "
+                    + "Nach dem Scannen verschwindet er.");
             root.postDelayed(() -> {
-                if (!isFinishing() && !Store.p(this).getBoolean("paired", false)) render();
-            }, 5000);
-            return;
+                if (!isFinishing()) render();
+            }, 4000);
+            if (!paired) return;
         }
 
         JSONObject cfg = Store.cfg(this);
@@ -113,7 +102,22 @@ public class MainActivity extends Activity {
         text("Telefon, SMS und Notruf funktionieren immer.");
 
         section("Für Eltern");
-        button("Notfall-Freigabe (Kopplungscode nötig)", this::emergencyRelease);
+        button("Eltern-Handy verloren? Neu koppeln", () -> askRecovery(
+                "Neues Eltern-Handy koppeln",
+                "Es erscheint ein QR-Code. Das Handy, das ihn scannt, wird Admin.",
+                () -> {
+                    Family.newQrInvite(this);
+                    render();
+                }));
+        button("Notfall-Freigabe", () -> askRecovery(
+                "Kontrolle komplett aufheben?",
+                "Danach gelten keine Regeln mehr und die App kann deinstalliert werden.",
+                () -> new Thread(() -> {
+                    Policy.release(this);
+                    runOnUiThread(this::render);
+                }).start()));
+        TextView hint = text("Beides braucht den Notfall-Code aus der Eltern-App (Admin → Wartung).");
+        hint.setTextSize(12);
         String err = Store.p(this).getString("lastError", "");
         if (!err.isEmpty()) {
             TextView tv = text("Letzter Fehler: " + err);
@@ -123,38 +127,20 @@ public class MainActivity extends Activity {
         v.setTextSize(11);
     }
 
-    private void emergencyRelease() {
+    private void askRecovery(String title, String msg, Runnable onOk) {
         final EditText et = new EditText(this);
-        et.setHint("Kopplungscode");
+        et.setHint("Notfall-Code");
         new AlertDialog.Builder(this)
-                .setTitle("Kontrolle komplett aufheben?")
-                .setMessage("Danach gelten keine Regeln mehr und die App kann deinstalliert werden.")
+                .setTitle(title)
+                .setMessage(msg)
                 .setView(et)
-                .setPositiveButton("Aufheben", (d, w) -> {
-                    if (Crypto.normalize(et.getText().toString()).equals(Store.code(this))) {
-                        new Thread(() -> {
-                            Policy.release(this);
-                            runOnUiThread(this::render);
-                        }).start();
-                    } else {
-                        Toast.makeText(this, "Falscher Code", Toast.LENGTH_LONG).show();
-                    }
+                .setPositiveButton("OK", (d, w) -> {
+                    String want = Crypto.recoveryCode(Family.key(this));
+                    if (Crypto.normalize(et.getText().toString()).equals(want)) onOk.run();
+                    else Toast.makeText(this, "Falscher Code", Toast.LENGTH_LONG).show();
                 })
                 .setNegativeButton("Abbrechen", null)
                 .show();
-    }
-
-    private static Bitmap qrBitmap(String text, int size) {
-        try {
-            BitMatrix m = new QRCodeWriter().encode(text, BarcodeFormat.QR_CODE, size, size);
-            Bitmap bmp = Bitmap.createBitmap(size, size, Bitmap.Config.RGB_565);
-            for (int x = 0; x < size; x++) {
-                for (int y = 0; y < size; y++) bmp.setPixel(x, y, m.get(x, y) ? Color.BLACK : Color.WHITE);
-            }
-            return bmp;
-        } catch (Exception e) {
-            return Bitmap.createBitmap(1, 1, Bitmap.Config.RGB_565);
-        }
     }
 
     private String label(String pkg) {

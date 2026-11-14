@@ -10,7 +10,7 @@ public class PollJob extends JobService {
         new Thread(() -> {
             boolean retry = false;
             try {
-                Sync.poll(this, true);
+                Sync.pollAll(this, true);
             } catch (Exception e) {
                 retry = true;
             }
