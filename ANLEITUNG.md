@@ -64,3 +64,15 @@ Wird der Nutzungszugriff entzogen, sperrt sich das Handy komplett und du bekomms
 
 - Eltern-App → Wartung → **Kontrolle komplett aufheben**, oder
 - auf dem Kinder-Handy in der App → **Notfall-Freigabe** mit dem Kopplungscode.
+
+## Mehrere Kinder und Eltern
+
+- **Weiteres Kind:** In der Eltern-App oben auf „+ Kind“ tippen und den QR-Code des neuen Kinder-Handys scannen.
+- **Zweites Elternteil:** Der Admin tippt unter „Eltern“ auf „Elternteil einladen“. Das andere Elternteil
+  installiert die Eltern-App und scannt den angezeigten QR-Code (gilt 24 Stunden, nur einmal).
+- **Rollen:** Wer das Kinder-Handy als Erstes koppelt, ist Admin. Admins können Eltern einladen, entfernen,
+  zu Admins machen, USB-Debugging freigeben und die Kontrolle aufheben. Elternteile können alles andere.
+- **Entfernen:** Wird ein Elternteil entfernt, erzeugt das Kinder-Handy einen neuen Schlüssel.
+  Das entfernte Handy kann danach nichts mehr lesen oder senden.
+- **Notfall-Code:** Der Admin findet ihn unter „Wartung“. Damit lässt sich direkt am Kinder-Handy ein neues
+  Eltern-Handy koppeln (z. B. wenn deins verloren geht) oder die Kontrolle aufheben.
