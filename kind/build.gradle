@@ -1,0 +1,47 @@
+plugins { id 'com.android.application' }
+
+def vc = (project.findProperty('versionCode') ?: '1').toString().toInteger()
+def repo = (project.findProperty('updateRepo') ?: '').toString()
+def pw = System.getenv('KEYSTORE_PASSWORD') ?: ''
+
+android {
+    namespace 'de.familienzeit.kind'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'de.familienzeit.kind'
+        minSdk 29
+        targetSdk 35
+        versionCode vc
+        versionName "1.${vc}"
+        buildConfigField "String", "UPDATE_REPO", "\"${repo}\""
+    }
+    buildFeatures { buildConfig true }
+
+    signingConfigs {
+        release {
+            storeFile rootProject.file('signing/release.p12')
+            storeType 'pkcs12'
+            storePassword pw
+            keyAlias 'familienzeit'
+            keyPassword pw
+        }
+    }
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.release
+        }
+    }
+    sourceSets {
+        main { java.srcDirs += rootProject.file('common/java') }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    lint {
+        checkReleaseBuilds false
+        abortOnError false
+    }
+}

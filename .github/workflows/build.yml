@@ -1,0 +1,54 @@
+name: Apps bauen und veröffentlichen
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.11.1"
+
+      - name: Prüfen, ob die Schlüssel hinterlegt sind
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          UPDATES_TOKEN: ${{ secrets.UPDATES_TOKEN }}
+        run: |
+          if [ -z "$KEYSTORE_PASSWORD" ]; then echo "::error::Secret KEYSTORE_PASSWORD fehlt"; exit 1; fi
+          if [ -z "$UPDATES_TOKEN" ]; then echo "::error::Secret UPDATES_TOKEN fehlt"; exit 1; fi
+
+      - name: Bauen
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+        run: >
+          gradle --no-daemon assembleRelease
+          -PversionCode=${{ github.run_number }}
+          -PupdateRepo=${{ github.repository_owner }}/familienzeit-updates
+
+      - name: Dateien zusammenstellen
+        run: |
+          mkdir dist
+          cp kind/build/outputs/apk/release/kind-release.apk dist/kind.apk
+          cp eltern/build/outputs/apk/release/eltern-release.apk dist/eltern.apk
+          echo "${{ github.run_number }}" > dist/version.txt
+
+      - name: Im öffentlichen Update-Repository veröffentlichen
+        uses: softprops/action-gh-release@v2
+        with:
+          repository: ${{ github.repository_owner }}/familienzeit-updates
+          token: ${{ secrets.UPDATES_TOKEN }}
+          tag_name: v${{ github.run_number }}
+          name: Version ${{ github.run_number }}
+          make_latest: true
+          files: dist/*
